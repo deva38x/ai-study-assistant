@@ -1,51 +1,106 @@
-const { GoogleGenAI, createUserContent, createPartFromUri } = require("@google/genai");
+const {
+  GoogleGenAI,
+  createUserContent,
+  createPartFromUri,
+} = require("@google/genai");
+
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const Note = require("../models/Note");
 
+
+// ==========================================
+// GEMINI AI CLIENT
+// ==========================================
 const ai = new GoogleGenAI({
   apiKey: process.env.GOOGLE_AI_KEY,
 });
 
 
 // ==========================================
-// Get PDF from the selected study material
+// GET NOTE AND DOWNLOAD PDF FROM CLOUDINARY
 // ==========================================
-const getNoteAndPdf = async (req, res) => {
+const getNoteAndPdf = async (req) => {
   const note = await Note.findById(req.params.id);
 
   if (!note) {
-    res.status(404);
-    throw new Error("Study material not found");
+    const error = new Error("Study material not found");
+    error.statusCode = 404;
+    throw error;
   }
 
   // Make sure the logged-in user owns this note
-  if (note.user.toString() !== req.user._id.toString()) {
-    res.status(403);
-    throw new Error("Not authorized to access this study material");
+  if (
+    note.user.toString() !==
+    req.user._id.toString()
+  ) {
+    const error = new Error(
+      "Not authorized to access this study material"
+    );
+    error.statusCode = 403;
+    throw error;
   }
 
+  // Check PDF URL
   if (!note.pdfUrl) {
-    res.status(400);
-    throw new Error("This study material does not have a PDF");
+    const error = new Error(
+      "This study material does not have a PDF"
+    );
+    error.statusCode = 400;
+    throw error;
   }
 
-  const fileName = path.basename(note.pdfUrl);
+  console.log("Cloudinary PDF URL:");
+  console.log(note.pdfUrl);
 
-  const pdfPath = path.join(
-    __dirname,
-    "../uploads",
-    fileName
+  // ==========================================
+  // CREATE TEMPORARY PDF PATH
+  // ==========================================
+  const tempFileName =
+    `study-${note._id}-${Date.now()}.pdf`;
+
+  const tempPdfPath = path.join(
+    os.tmpdir(),
+    tempFileName
   );
 
-  if (!fs.existsSync(pdfPath)) {
-    res.status(404);
-    throw new Error("PDF file not found on server");
+  console.log("Downloading PDF from Cloudinary...");
+
+  // ==========================================
+  // DOWNLOAD PDF
+  // ==========================================
+  const response = await fetch(note.pdfUrl);
+
+  if (!response.ok) {
+    throw new Error(
+      `Failed to download PDF from Cloudinary. Status: ${response.status}`
+    );
   }
+
+  const arrayBuffer =
+    await response.arrayBuffer();
+
+  const pdfBuffer =
+    Buffer.from(arrayBuffer);
+
+  // ==========================================
+  // SAVE TEMPORARY PDF
+  // ==========================================
+  fs.writeFileSync(
+    tempPdfPath,
+    pdfBuffer
+  );
+
+  console.log(
+    "PDF downloaded successfully:"
+  );
+
+  console.log(tempPdfPath);
 
   return {
     note,
-    pdfPath,
+    pdfPath: tempPdfPath,
   };
 };
 
@@ -55,23 +110,45 @@ const getNoteAndPdf = async (req, res) => {
 // ==========================================
 const generateSummary = async (req, res) => {
   let uploadedFile = null;
+  let pdfPath = null;
 
   try {
-    const { note, pdfPath } = await getNoteAndPdf(req, res);
+    // Get note and download PDF
+    const result =
+      await getNoteAndPdf(req);
 
-    console.log("Generating summary for:", note.title);
-    console.log("PDF:", pdfPath);
+    const note = result.note;
+    pdfPath = result.pdfPath;
 
-    // Upload the actual PDF to Gemini
-    uploadedFile = await ai.files.upload({
-      file: pdfPath,
-      config: {
-        mimeType: "application/pdf",
-      },
-    });
+    console.log(
+      "Generating summary for:",
+      note.title
+    );
 
-    console.log("PDF uploaded to Gemini:", uploadedFile.name);
+    console.log(
+      "Temporary PDF:",
+      pdfPath
+    );
 
+    // ==========================================
+    // UPLOAD PDF TO GEMINI
+    // ==========================================
+    uploadedFile =
+      await ai.files.upload({
+        file: pdfPath,
+        config: {
+          mimeType: "application/pdf",
+        },
+      });
+
+    console.log(
+      "PDF uploaded to Gemini:",
+      uploadedFile.name
+    );
+
+    // ==========================================
+    // SUMMARY PROMPT
+    // ==========================================
     const prompt = `
 Read the PDF document carefully.
 
@@ -103,18 +180,34 @@ The summary should:
 Base the summary entirely on the uploaded PDF.
 `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents: createUserContent([
-        createPartFromUri(
-          uploadedFile.uri,
-          uploadedFile.mimeType
-        ),
-        prompt,
-      ]),
-    });
+    // ==========================================
+    // GENERATE SUMMARY USING GEMINI
+    // ==========================================
+    const response =
+      await ai.models.generateContent({
+        model: "gemini-3.6-flash",
 
-    const summary = response.text;
+        contents: createUserContent([
+          createPartFromUri(
+            uploadedFile.uri,
+            uploadedFile.mimeType
+          ),
+          prompt,
+        ]),
+      });
+
+    const summary =
+      response.text;
+
+    // ==========================================
+    // DELETE TEMPORARY PDF
+    // ==========================================
+    if (
+      pdfPath &&
+      fs.existsSync(pdfPath)
+    ) {
+      fs.unlinkSync(pdfPath);
+    }
 
     res.json({
       success: true,
@@ -124,11 +217,25 @@ Base the summary entirely on the uploaded PDF.
     });
 
   } catch (error) {
-    console.error("Summary generation error:", error);
+    console.error(
+      "Summary generation error:",
+      error
+    );
 
-    res.status(500).json({
-      message: "Failed to generate summary",
-      error: error.message,
+    // Delete temporary PDF if something failed
+    if (
+      pdfPath &&
+      fs.existsSync(pdfPath)
+    ) {
+      fs.unlinkSync(pdfPath);
+    }
+
+    res.status(
+      error.statusCode || 500
+    ).json({
+      message:
+        error.message ||
+        "Failed to generate summary",
     });
   }
 };
@@ -139,23 +246,45 @@ Base the summary entirely on the uploaded PDF.
 // ==========================================
 const generateAssignment = async (req, res) => {
   let uploadedFile = null;
+  let pdfPath = null;
 
   try {
-    const { note, pdfPath } = await getNoteAndPdf(req, res);
+    // Get note and download PDF
+    const result =
+      await getNoteAndPdf(req);
 
-    console.log("Generating assignment for:", note.title);
-    console.log("PDF:", pdfPath);
+    const note = result.note;
+    pdfPath = result.pdfPath;
 
-    // Upload the SAME PDF to Gemini
-    uploadedFile = await ai.files.upload({
-      file: pdfPath,
-      config: {
-        mimeType: "application/pdf",
-      },
-    });
+    console.log(
+      "Generating assignment for:",
+      note.title
+    );
 
-    console.log("PDF uploaded to Gemini:", uploadedFile.name);
+    console.log(
+      "Temporary PDF:",
+      pdfPath
+    );
 
+    // ==========================================
+    // UPLOAD PDF TO GEMINI
+    // ==========================================
+    uploadedFile =
+      await ai.files.upload({
+        file: pdfPath,
+        config: {
+          mimeType: "application/pdf",
+        },
+      });
+
+    console.log(
+      "PDF uploaded to Gemini:",
+      uploadedFile.name
+    );
+
+    // ==========================================
+    // ASSIGNMENT PROMPT
+    // ==========================================
     const prompt = `
 Read the uploaded PDF carefully.
 
@@ -196,18 +325,34 @@ Requirements:
 Base the entire assignment on the uploaded PDF.
 `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents: createUserContent([
-        createPartFromUri(
-          uploadedFile.uri,
-          uploadedFile.mimeType
-        ),
-        prompt,
-      ]),
-    });
+    // ==========================================
+    // GENERATE ASSIGNMENT USING GEMINI
+    // ==========================================
+    const response =
+      await ai.models.generateContent({
+        model: "gemini-3.6-flash",
 
-    const assignment = response.text;
+        contents: createUserContent([
+          createPartFromUri(
+            uploadedFile.uri,
+            uploadedFile.mimeType
+          ),
+          prompt,
+        ]),
+      });
+
+    const assignment =
+      response.text;
+
+    // ==========================================
+    // DELETE TEMPORARY PDF
+    // ==========================================
+    if (
+      pdfPath &&
+      fs.existsSync(pdfPath)
+    ) {
+      fs.unlinkSync(pdfPath);
+    }
 
     res.json({
       success: true,
@@ -217,16 +362,33 @@ Base the entire assignment on the uploaded PDF.
     });
 
   } catch (error) {
-    console.error("Assignment generation error:", error);
+    console.error(
+      "Assignment generation error:",
+      error
+    );
 
-    res.status(500).json({
-      message: "Failed to generate assignment",
-      error: error.message,
+    // Delete temporary PDF if something failed
+    if (
+      pdfPath &&
+      fs.existsSync(pdfPath)
+    ) {
+      fs.unlinkSync(pdfPath);
+    }
+
+    res.status(
+      error.statusCode || 500
+    ).json({
+      message:
+        error.message ||
+        "Failed to generate assignment",
     });
   }
 };
 
 
+// ==========================================
+// EXPORT
+// ==========================================
 module.exports = {
   generateSummary,
   generateAssignment,

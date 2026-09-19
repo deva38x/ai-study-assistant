@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { getNotes, deleteNote } from '../services/api';
+import {getNotes, deleteNote} from '../services/api';
 import NoteForm from './NoteForm';
 import AIResults from './AIResults';
 import '../styles/Dashboard.css';
@@ -156,7 +157,7 @@ export default function Dashboard({ onLogout }) {
                         <p>
                           <strong>PDF:</strong>{' '}
                           <a
-                            href={`http://localhost:5000${note.pdfUrl}`}
+                            href={note.pdfUrl}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="pdf-link"

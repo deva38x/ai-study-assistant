@@ -1,14 +1,29 @@
 const mongoose = require("mongoose");
+const dns = require("dns");
+
+// Force Node.js to use public DNS servers
+dns.setServers([
+  "8.8.8.8",
+  "1.1.1.1"
+]);
 
 const connectDB = async () => {
   try {
-    console.log("MONGO_URI =", process.env.MONGO_URI);
-    await mongoose.connect(process.env.MONGO_URI);
+    console.log("Connecting to MongoDB...");
+
+    console.log(
+      "DNS servers:",
+      dns.getServers()
+    );
+
+    await mongoose.connect(process.env.MONGO_URI, {
+      serverSelectionTimeoutMS: 15000,
+    });
 
     console.log("MongoDB Connected");
   } catch (error) {
-    console.log(error);
-    process.exit(1);
+    console.error("MongoDB connection error:");
+    console.error(error);
   }
 };
 

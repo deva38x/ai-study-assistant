@@ -1,34 +1,64 @@
 const Note = require("../models/Note");
-const fs = require("fs");
-const path = require("path");
+const cloudinary = require("../config/cloudinary");
+const streamifier = require("streamifier");
+
+// ==========================================
+// CREATE STUDY MATERIAL
+// ==========================================
 
 const createNote = async (req, res) => {
   try {
     const { title, subject } = req.body;
 
-    // Check text fields
     if (!title || !subject) {
       return res.status(400).json({
         message: "Title and subject are required",
       });
     }
 
-    // Check PDF
     if (!req.file) {
       return res.status(400).json({
         message: "PDF file is required",
       });
     }
 
-    // URL/path where the uploaded PDF can be accessed
-    const pdfUrl = `/uploads/${req.file.filename}`;
+    console.log("Uploading PDF to Cloudinary...");
+
+    const uploadResult = await new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          resource_type: "image",
+          folder: "ai-study-assistant/pdfs",
+          use_filename: true,
+          unique_filename: true,
+        },
+        (error, result) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve(result);
+          }
+        }
+      );
+
+      streamifier
+        .createReadStream(req.file.buffer)
+        .pipe(uploadStream);
+    });
+
+    console.log(
+      "PDF uploaded to Cloudinary:",
+      uploadResult.secure_url
+    );
 
     const note = await Note.create({
       title,
       subject,
-      pdfUrl,
+      pdfUrl: uploadResult.secure_url,
       user: req.user._id,
     });
+
+    console.log("Study material saved to MongoDB");
 
     res.status(201).json(note);
 
@@ -40,17 +70,20 @@ const createNote = async (req, res) => {
     });
   }
 };
-
-
+// ==========================================
+// GET ALL STUDY MATERIALS
+// ==========================================
 const getNotes = async (req, res) => {
   try {
     const notes = await Note.find({
       user: req.user._id,
-    });
+    }).sort({ createdAt: -1 });
 
     res.json(notes);
 
   } catch (error) {
+    console.error("Get notes error:", error);
+
     res.status(500).json({
       message: error.message,
     });
@@ -58,6 +91,9 @@ const getNotes = async (req, res) => {
 };
 
 
+// ==========================================
+// UPDATE STUDY MATERIAL
+// ==========================================
 const updateNote = async (req, res) => {
   try {
     const note = await Note.findById(req.params.id);
@@ -69,7 +105,10 @@ const updateNote = async (req, res) => {
     }
 
     // Make sure the user owns this note
-    if (note.user.toString() !== req.user._id.toString()) {
+    if (
+      note.user.toString() !==
+      req.user._id.toString()
+    ) {
       return res.status(403).json({
         message: "Not authorized",
       });
@@ -77,7 +116,10 @@ const updateNote = async (req, res) => {
 
     const updatedNote = await Note.findByIdAndUpdate(
       req.params.id,
-      req.body,
+      {
+        title: req.body.title,
+        subject: req.body.subject,
+      },
       {
         new: true,
         runValidators: true,
@@ -87,6 +129,8 @@ const updateNote = async (req, res) => {
     res.json(updatedNote);
 
   } catch (error) {
+    console.error("Update note error:", error);
+
     res.status(500).json({
       message: error.message,
     });
@@ -94,6 +138,9 @@ const updateNote = async (req, res) => {
 };
 
 
+// ==========================================
+// DELETE STUDY MATERIAL
+// ==========================================
 const deleteNote = async (req, res) => {
   try {
     const note = await Note.findById(req.params.id);
@@ -105,26 +152,17 @@ const deleteNote = async (req, res) => {
     }
 
     // Make sure the user owns this note
-    if (note.user.toString() !== req.user._id.toString()) {
+    if (
+      note.user.toString() !==
+      req.user._id.toString()
+    ) {
       return res.status(403).json({
         message: "Not authorized",
       });
     }
 
-    // Delete the physical PDF file
-    if (note.pdfUrl) {
-      const fileName = path.basename(note.pdfUrl);
-      const filePath = path.join(
-        __dirname,
-        "../uploads",
-        fileName
-      );
-
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-    }
-
+    // Delete note from MongoDB
+    // PDF remains in Cloudinary for now
     await Note.findByIdAndDelete(req.params.id);
 
     res.json({
@@ -132,6 +170,8 @@ const deleteNote = async (req, res) => {
     });
 
   } catch (error) {
+    console.error("Delete note error:", error);
+
     res.status(500).json({
       message: error.message,
     });
@@ -139,6 +179,9 @@ const deleteNote = async (req, res) => {
 };
 
 
+// ==========================================
+// EXPORT CONTROLLERS
+// ==========================================
 module.exports = {
   createNote,
   getNotes,
