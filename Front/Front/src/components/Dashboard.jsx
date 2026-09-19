@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { getNotes, deleteNote } from '../services/api';
-import {getNotes, deleteNote} from '../services/api';
 import NoteForm from './NoteForm';
 import AIResults from './AIResults';
 import '../styles/Dashboard.css';
